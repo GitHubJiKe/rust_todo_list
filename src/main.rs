@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 use chrono::{DateTime, Utc};
 use rand::Rng;
+use regex::Regex;
 
 #[derive(Parser)]
 #[command(name = "rustodo")]
@@ -51,6 +52,31 @@ enum Commands {
     Delete {
         /// TODO的ID
         todo_id: String,
+    },
+    /// 搜索TODO项
+    Search {
+        /// 搜索的正则表达式
+        regex: String,
+        /// 使用正则表达式搜索
+        #[arg(short = 'R', long)]
+        regex_flag: bool,
+    },
+    /// 排序TODO项
+    Sort {
+        /// 排序字段 (id, content, status, created, updated)
+        field: String,
+        /// 降序排序
+        #[arg(short = 'D', long)]
+        desc: bool,
+        /// 升序排序
+        #[arg(short = 'A', long)]
+        asc: bool,
+    },
+    /// 导出所有TODO项到指定JSON文件
+    Export {
+        /// 导出文件路径
+        #[arg(short = 'P', long)]
+        path: String,
     },
 }
 
@@ -258,6 +284,177 @@ impl TodoManager {
         println!();
         Ok(())
     }
+
+    fn search_todos(&self, pattern: &str, use_regex: bool) -> Result<(), Box<dyn std::error::Error>> {
+        if self.todos.is_empty() {
+            println!("📝 暂无TODO项");
+            return Ok(());
+        }
+
+        let mut matched_todos: Vec<&TodoItem> = Vec::new();
+
+        if use_regex {
+            // 使用正则表达式搜索
+            let regex = match Regex::new(pattern) {
+                Ok(re) => re,
+                Err(e) => {
+                    println!("❌ 无效的正则表达式: {}", e);
+                    return Ok(());
+                }
+            };
+
+            for todo in self.todos.values() {
+                if regex.is_match(&todo.content) {
+                    matched_todos.push(todo);
+                }
+            }
+        } else {
+            // 使用简单字符串搜索（不区分大小写）
+            let pattern_lower = pattern.to_lowercase();
+            for todo in self.todos.values() {
+                if todo.content.to_lowercase().contains(&pattern_lower) {
+                    matched_todos.push(todo);
+                }
+            }
+        }
+
+        if matched_todos.is_empty() {
+            println!("🔍 未找到匹配 '{}' 的TODO项", pattern);
+            return Ok(());
+        }
+
+        // 按创建时间排序
+        matched_todos.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+        println!("\n🔍 搜索结果 (匹配 '{}'):", pattern);
+        println!("{:<8} {:<20} {:<20} {:<10} {:<40}", "ID", "创建时间", "更新时间", "状态", "内容");
+        println!("{}", "-".repeat(100));
+
+        for todo in &matched_todos {
+            let created_time = todo.created_at.format("%m-%d %H:%M").to_string();
+            let updated_time = todo.updated_at.format("%m-%d %H:%M").to_string();
+            let status = todo.status.to_colored_string();
+            println!(
+                "{:<8} {:<20} {:<20} {:<10} {:<40}",
+                todo.id,
+                created_time,
+                updated_time,
+                status,
+                if todo.content.len() > 38 {
+                    format!("{}...", &todo.content[..35])
+                } else {
+                    todo.content.clone()
+                }
+            );
+        }
+        println!("{}", "-".repeat(100));
+        println!("找到 {} 项匹配结果", matched_todos.len());
+        println!();
+        Ok(())
+    }
+
+    fn sort_todos(&self, field: &str, desc: bool) -> Result<(), Box<dyn std::error::Error>> {
+        if self.todos.is_empty() {
+            println!("📝 暂无TODO项");
+            return Ok(());
+        }
+
+        let mut sorted_todos: Vec<&TodoItem> = self.todos.values().collect();
+
+        // 根据字段排序
+        match field.to_lowercase().as_str() {
+            "id" => {
+                if desc {
+                    sorted_todos.sort_by(|a, b| b.id.cmp(&a.id));
+                } else {
+                    sorted_todos.sort_by(|a, b| a.id.cmp(&b.id));
+                }
+            }
+            "content" => {
+                if desc {
+                    sorted_todos.sort_by(|a, b| b.content.cmp(&a.content));
+                } else {
+                    sorted_todos.sort_by(|a, b| a.content.cmp(&b.content));
+                }
+            }
+            "status" => {
+                if desc {
+                    sorted_todos.sort_by(|a, b| {
+                        let status_a = match &a.status {
+                            TodoStatus::HOLD => 0,
+                            TodoStatus::DOING => 1,
+                            TodoStatus::DONE => 2,
+                        };
+                        let status_b = match &b.status {
+                            TodoStatus::HOLD => 0,
+                            TodoStatus::DOING => 1,
+                            TodoStatus::DONE => 2,
+                        };
+                        status_b.cmp(&status_a)
+                    });
+                } else {
+                    sorted_todos.sort_by(|a, b| {
+                        let status_a = match &a.status {
+                            TodoStatus::HOLD => 0,
+                            TodoStatus::DOING => 1,
+                            TodoStatus::DONE => 2,
+                        };
+                        let status_b = match &b.status {
+                            TodoStatus::HOLD => 0,
+                            TodoStatus::DOING => 1,
+                            TodoStatus::DONE => 2,
+                        };
+                        status_a.cmp(&status_b)
+                    });
+                }
+            }
+            "created" => {
+                if desc {
+                    sorted_todos.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                } else {
+                    sorted_todos.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+                }
+            }
+            "updated" => {
+                if desc {
+                    sorted_todos.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                } else {
+                    sorted_todos.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+                }
+            }
+            _ => {
+                println!("❌ 无效的排序字段: {}. 有效字段: id, content, status, created, updated", field);
+                return Ok(());
+            }
+        }
+
+        let order = if desc { "降序" } else { "升序" };
+        println!("\n📋 TODO列表 (按 {} {} 排序):", field, order);
+        println!("{:<8} {:<20} {:<20} {:<10} {:<40}", "ID", "创建时间", "更新时间", "状态", "内容");
+        println!("{}", "-".repeat(100));
+
+        for todo in &sorted_todos {
+            let created_time = todo.created_at.format("%m-%d %H:%M").to_string();
+            let updated_time = todo.updated_at.format("%m-%d %H:%M").to_string();
+            let status = todo.status.to_colored_string();
+            println!(
+                "{:<8} {:<20} {:<20} {:<10} {:<40}",
+                todo.id,
+                created_time,
+                updated_time,
+                status,
+                if todo.content.len() > 38 {
+                    format!("{}...", &todo.content[..35])
+                } else {
+                    todo.content.clone()
+                }
+            );
+        }
+        println!("{}", "-".repeat(100));
+        println!("总计: {} 项", sorted_todos.len());
+        println!();
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -286,6 +483,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Delete { todo_id } => {
             manager.delete_todo(todo_id)?;
+        }
+        Commands::Search { regex, regex_flag } => {
+            manager.search_todos(regex, *regex_flag)?;
+        }
+        Commands::Sort { field, desc, asc: _ } => {
+            // 如果指定了降序，使用降序；否则使用升序
+            let is_desc = *desc;
+            manager.sort_todos(field, is_desc)?;
+        }
+        Commands::Export { path } => {
+            let todos: Vec<TodoItem> = manager.todos.values().cloned().collect();
+            let content = serde_json::to_string_pretty(&todos)?;
+            fs::write(path, content)?;
+            println!("✅ 所有TODO项已导出到 {}", path);
         }
     }
 
